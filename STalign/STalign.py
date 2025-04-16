@@ -603,11 +603,9 @@ def saveRasters(X, Y, W, V, Z, scree_fig, nrows, ncols, name, path):
              screefig=scree_fig, rgbfig = fig)
     
     print(f"Saved all {name} files!\n")
-    
-    
 
-    
-def interp(x,I,phii,**kwargs):
+
+def interp(x,I,phii,device='cpu',**kwargs):
     '''
     Interpolate the 2D image I, with regular grid positions stored in x (1d arrays),
     at the positions stored in phii (3D arrays with first channel storing component)    
@@ -637,8 +635,10 @@ def interp(x,I,phii,**kwargs):
     '''
     
     # first we have to normalize phii to the range -1,1    
-    I = torch.as_tensor(I)
-    phii = torch.as_tensor(phii)
+    I = torch.as_tensor(I).to('cpu')
+    phii = torch.as_tensor(phii).to('cpu')
+    x = [i.clone().detach().to('cpu') if isinstance(i, torch.Tensor) else torch.tensor(i, device=device) for i in x] 
+        
     phii = torch.clone(phii)
     for i in range(2):
         phii[i] -= x[i][0]
@@ -654,11 +654,12 @@ def interp(x,I,phii,**kwargs):
     # is this the right order?
     # I need to put batch (none) along first axis
     # what order do the other 3 need to be in?    
-    out = grid_sample(I[None],phii.flip(0).permute((1,2,0))[None],align_corners=True,**kwargs)
+    out = STalign.grid_sample(I[None],phii.flip(0).permute((1,2,0))[None],align_corners=True,**kwargs)
     # note align corners true means square voxels with points at their centers
     # post processing, get rid of batch dimension
-
-    return out[0]
+    
+    return out[0].to('cpu')    
+    
 
 # build an interp function from grid sample
 def interp3D(x,I,phii,**kwargs):
@@ -1629,8 +1630,6 @@ def LDDMM_3D_to_slice(xI,I,xJ,J,pointsI=None,pointsJ=None,
         'Xs': Xs.clone().detach()
     }
 
-
-
 def build_transform(xv,v,A,direction='b',XJ=None):
     ''' Create sample points to transform source to target from affine and velocity.
     
@@ -1657,22 +1656,25 @@ def build_transform(xv,v,A,direction='b',XJ=None):
     
     '''
     
-    A = torch.tensor(A)
-    if v is not None: v = torch.tensor(v) 
+    A = A.clone().detach().to('cpu')  
+    xv = [x.clone().detach().to('cpu') if isinstance(x, torch.Tensor) else torch.tensor(x, device='cpu') for x in xv]
+
+    if v is not None: v = v.clone().detach().to(device) #v = torch.tensor(v) 
     if XJ is not None:
+        
         # check some types here
         if isinstance(XJ,list):
             if XJ[0].ndim == 1: # need meshgrid
-                XJ = torch.stack(torch.meshgrid([torch.tensor(x) for x in XJ],indexing='ij'),-1)
+                XJ = torch.stack(torch.meshgrid([torch.tensor(x).to('cpu') for x in XJ],indexing='ij'),-1)
             elif XJ[0].ndim == 2: # assume already meshgrid
-                XJ = torch.stack([torch.tensor(x) for x in XJ],-1)
+                XJ = torch.stack([torch.tensor(x).to('cpu') for x in XJ],-1)
             else:
                 raise Exception('Could not understand variable XJ type')
             
         # if it is already in meshgrid form we just need to make sure it is a tensor
-        XJ = torch.tensor(XJ)
+        XJ = XJ.clone().detach().to('cpu')
     else:
-        XJ = torch.stack(torch.meshgrid([torch.tensor(x) for x in xv],indexing='ij'),-1)
+        XJ = torch.stack(torch.meshgrid([torch.tensor(x).to('cpu') for x in xv],indexing='ij'),-1)
         
     if direction == 'b':
         Ai = torch.linalg.inv(A)
@@ -1816,15 +1818,21 @@ def transform_points_source_to_target(xv,v,A,pointsI):
     Transform points.  Note points are in row column order, not xy.
     '''
     #phi = build_transform(xv,v,A,direction='f',XJ=XI)
+    A = A.clone().detach().to('cpu')
+    v = v.clone().detach().to('cpu')
+    xv = [x.clone().detach().to('cpu') if isinstance(x, torch.Tensor) else torch.tensor(x, device='cpu') for x in xv]
+    
     if isinstance(pointsI,torch.Tensor):
+        pointsI = pointsI.to('cpu')
         pointsIt = torch.clone(pointsI)
     else:
-        pointsIt = torch.tensor(pointsI)
+        pointsIt = torch.tensor(pointsI).to('cpu')
     nt = v.shape[0]
     for t in range(nt):            
-        pointsIt += interp(xv,v[t].permute(2,0,1),pointsIt.T[...,None])[...,0].T/nt
+        pointsIt += interp(xv,v[t].permute(2,0,1),pointsIt.T[...,None],device=device)[...,0].T/nt
     pointsIt = (A[:2,:2]@pointsIt.T + A[:2,-1][...,None]).T
     return pointsIt
+
 def transform_points_target_to_source(xv,v,A,pointsI):
     '''
     Transform points.  Note points are in row column order, not xy.
